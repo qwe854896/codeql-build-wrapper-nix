@@ -146,7 +146,7 @@ If new libraries need ignoring, update the overlay in [flake.nix](flake.nix).
 
 ```nix
 {
-  inputs.codeql-wrapper.url = "github:you/codeql-build-wrapper";
+  inputs.codeql-wrapper.url = "github:qwe854896/codeql-build-wrapper";
 
   outputs = { self, nixpkgs, codeql-wrapper, ... }:
     let
