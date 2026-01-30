@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Run CodeQL queries against a database
+# Handles the read-only Nix store issue automatically
+#
+# Usage:
+#   ./scripts/run-query <database-path> <query.ql>
+#   ./scripts/run-query result-codeql queries/list-functions.ql
+#   ./scripts/run-query result-codeql queries/  # Run all queries in directory
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") <database> <query>
+
+Run CodeQL queries against a database.
+
+Arguments:
+  <database>   Path to CodeQL database (e.g., result-codeql)
+  <query>      Path to .ql file or directory of queries
+
+Options:
+  -f, --format FORMAT   Output format: table (default), csv, json, sarif
+  -o, --output FILE     Write results to file instead of stdout
+  -k, --keep            Keep temporary database copy (useful for debugging)
+  -h, --help            Show this help
+
+Examples:
+  $(basename "$0") result-codeql queries/list-functions.ql
+  $(basename "$0") result-codeql queries/list-functions.ql -f csv -o results.csv
+  $(basename "$0") result-codeql queries/  # Run all .ql files
+
+Note: The database is automatically copied to a writable location
+      because CodeQL needs write access for caching.
+EOF
+    exit "${1:-0}"
+}
+
+# Parse arguments
+FORMAT="table"
+OUTPUT=""
+KEEP_TEMP=false
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -f|--format)
+            FORMAT="$2"
+            shift 2
+            ;;
+        -o|--output)
+            OUTPUT="$2"
+            shift 2
+            ;;
+        -k|--keep)
+            KEEP_TEMP=true
+            shift
+            ;;
+        -h|--help)
+            usage 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage 1
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [[ ${#POSITIONAL[@]} -lt 2 ]]; then
+    echo "Error: Database and query required" >&2
+    usage 1
+fi
+
+DB_PATH="${POSITIONAL[0]}"
+QUERY_PATH="${POSITIONAL[1]}"
+
+# Resolve to absolute paths
+DB_PATH="$(cd "$(dirname "$DB_PATH")" && pwd)/$(basename "$DB_PATH")"
+if [[ -f "$QUERY_PATH" ]] || [[ -d "$QUERY_PATH" ]]; then
+    QUERY_PATH="$(cd "$(dirname "$QUERY_PATH")" && pwd)/$(basename "$QUERY_PATH")"
+fi
+
+# Validate inputs
+if [[ ! -d "$DB_PATH" ]]; then
+    echo "Error: Database not found: $DB_PATH" >&2
+    exit 1
+fi
+
+if [[ ! -f "$DB_PATH/codeql-database.yml" ]]; then
+    echo "Error: Not a valid CodeQL database: $DB_PATH" >&2
+    echo "       (missing codeql-database.yml)" >&2
+    exit 1
+fi
+
+if [[ ! -e "$QUERY_PATH" ]]; then
+    echo "Error: Query not found: $QUERY_PATH" >&2
+    exit 1
+fi
+
+# Create writable copy of database
+TEMP_DB="/tmp/codeql-db-$(basename "$DB_PATH")-$$"
+echo "Preparing database (copying to writable location)..."
+rm -rf "$TEMP_DB"
+cp -rL "$DB_PATH" "$TEMP_DB"
+chmod -R u+w "$TEMP_DB"
+
+cleanup() {
+    if [[ "$KEEP_TEMP" == "false" ]]; then
+        rm -rf "$TEMP_DB"
+    else
+        echo "Temporary database kept at: $TEMP_DB"
+    fi
+}
+trap cleanup EXIT
+
+echo "Running query: $(basename "$QUERY_PATH")"
+echo "Database: $DB_PATH"
+echo "Format: $FORMAT"
+echo
+
+# Build codeql command
+CMD=(codeql query run --database "$TEMP_DB")
+
+case "$FORMAT" in
+    table)
+        # Default format, no extra flags
+        ;;
+    csv)
+        CMD+=(--output="$TEMP_DB/results.bqrs")
+        ;;
+    json|sarif)
+        CMD+=(--output="$TEMP_DB/results.bqrs")
+        ;;
+    *)
+        echo "Unknown format: $FORMAT" >&2
+        exit 1
+        ;;
+esac
+
+CMD+=("$QUERY_PATH")
+
+# Run query
+"${CMD[@]}"
+
+# Handle non-table output formats
+if [[ "$FORMAT" != "table" ]] && [[ -f "$TEMP_DB/results.bqrs" ]]; then
+    DECODE_CMD=(codeql bqrs decode --format="$FORMAT" "$TEMP_DB/results.bqrs")
+    
+    if [[ -n "$OUTPUT" ]]; then
+        "${DECODE_CMD[@]}" > "$OUTPUT"
+        echo "Results written to: $OUTPUT"
+    else
+        "${DECODE_CMD[@]}"
+    fi
+fi

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Wrap any nixpkgs package with CodeQL database creation
+# This is the IMPERATIVE way to test packages without modifying flake.nix
+#
+# Usage:
+#   ./scripts/wrap-package hello
+#   ./scripts/wrap-package curl
+#   ./scripts/wrap-package --local ./packages/hello-c   # For local packages
+#
+# The result will be in ./result with the CodeQL database at ./result-codeql/
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] <package>
+
+Wrap a package with CodeQL database creation.
+
+Arguments:
+  <package>       Name of nixpkgs package (e.g., hello, curl, git)
+                  Or path to local package with --local
+
+Options:
+  -l, --local     Package is a local path (e.g., ./packages/hello-c)
+  -o, --out PATH  Output link name (default: result)
+  -h, --help      Show this help
+
+Examples:
+  $(basename "$0") hello                      # Wrap nixpkgs hello
+  $(basename "$0") --local ./packages/hello-c # Wrap local package
+  $(basename "$0") -o result-curl curl        # Custom output name
+
+After building, run queries with:
+  ./scripts/run-query result-codeql queries/list-functions.ql
+EOF
+    exit "${1:-0}"
+}
+
+# Parse arguments
+LOCAL_PKG=false
+OUT_LINK="result"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -l|--local)
+            LOCAL_PKG=true
+            shift
+            ;;
+        -o|--out)
+            OUT_LINK="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            usage 1
+            ;;
+        *)
+            PACKAGE="$1"
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "${PACKAGE:-}" ]]; then
+    echo "Error: Package name required" >&2
+    usage 1
+fi
+
+echo "╔═══════════════════════════════════════════════════════════╗"
+echo "║           CodeQL Package Wrapper (Imperative)             ║"
+echo "╠═══════════════════════════════════════════════════════════╣"
+echo "║ Package: $PACKAGE"
+echo "║ Local:   $LOCAL_PKG"
+echo "║ Output:  $OUT_LINK"
+echo "╚═══════════════════════════════════════════════════════════╝"
+echo
+
+if [[ "$LOCAL_PKG" == "true" ]]; then
+    # Local package: use callPackage
+    echo "Building local package: $PACKAGE"
+    nix build --impure --expr "
+      let
+        flake = builtins.getFlake \"path:$PROJECT_ROOT\";
+        pkgs = flake.legacyPackages.\${builtins.currentSystem};
+        wrapWithCodeql = import $PROJECT_ROOT/lib/codeql-wrapper.nix { inherit pkgs; };
+        pkg = pkgs.callPackage $PACKAGE {};
+      in wrapWithCodeql pkg
+    " -o "$OUT_LINK"
+else
+    # Nixpkgs package: use attribute directly
+    echo "Building nixpkgs package: $PACKAGE"
+    nix build --impure --expr "
+      let
+        flake = builtins.getFlake \"path:$PROJECT_ROOT\";
+        pkgs = flake.legacyPackages.\${builtins.currentSystem};
+        wrapWithCodeql = import $PROJECT_ROOT/lib/codeql-wrapper.nix { inherit pkgs; };
+      in wrapWithCodeql pkgs.$PACKAGE
+    " -o "$OUT_LINK"
+fi
+
+echo
+echo "✓ Build complete!"
+echo "  Binary:   $OUT_LINK/bin/*"
+echo "  Database: $OUT_LINK-codeql/"
+echo
+echo "Next: ./scripts/run-query $OUT_LINK-codeql queries/list-functions.ql"
