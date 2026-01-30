@@ -49,11 +49,17 @@ ls result-codeql/
 
 ### How It Works
 
-The wrapper uses the `preBuild` hook to intercept the build before it executes. It:
+**Bundle Selection**: The `codeqlBundleForSystem` function automatically selects the appropriate CodeQL bundle based on the target system:
+- `x86_64-linux` → `codeql-bundle-linux64`
+- `x86_64-darwin` / `aarch64-darwin` → `codeql-bundle-osx64`
+
+**Build Integration**: The wrapper uses the `preBuild` hook to intercept the build before it executes. It:
 1. Saves the build environment (variables and functions)
 2. Runs the actual build under CodeQL tracing
 3. Creates and bundles the CodeQL database
 4. Stores the database in a separate `codeql` output
+
+**Platform Customization**: On Darwin, the overlay overrides the CodeQL installation phase to properly set up the osx64 tools and Java paths, ensuring extractors can locate the correct Java distribution.
 
 ## Workflows
 
@@ -105,15 +111,41 @@ codeql query run --database result-codeql queries/list-functions.ql
 
 ## Configuration
 
+### Supported Systems
+
+The flake currently supports three systems:
+- `x86_64-linux`
+- `x86_64-darwin`
+- `aarch64-darwin` (Apple Silicon)
+
+This matches the available CodeQL bundle distributions (`codeql-bundle-linux64.tar.gz` and `codeql-bundle-osx64.tar.gz`).
+
 ### Changing CodeQL Version
 
-Edit `codeqlVersion` in [flake.nix](flake.nix):
+CodeQL bundles are specified as non-flake inputs in [flake.nix](flake.nix), allowing users to override them:
 
 ```nix
-codeqlVersion = "2.24.0";  # or null for nixpkgs default
+codeql-bundle-linux64 = {
+  url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-linux64.tar.gz";
+  flake = false;
+};
+codeql-bundle-osx64 = {
+  url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-osx64.tar.gz";
+  flake = false;
+};
 ```
 
-Then update the hash by running `nix build .#codeql` — it will fail and show the correct `sha256-...` hash. The flake uses **codeql-bundle** which includes all standard packs, so no `codeql pack install` is needed.
+To use a different CodeQL version, override the bundle input:
+
+```bash
+nix flake lock --override-input codeql-bundle-linux64 \
+  https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.1/codeql-bundle-linux64.tar.gz
+
+nix flake lock --override-input codeql-bundle-osx64 \
+  https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.1/codeql-bundle-osx64.tar.gz
+```
+
+The flake uses **codeql-bundle** which includes all standard packs, so no `codeql pack install` is needed.
 
 ### Adding Packages
 
@@ -136,11 +168,13 @@ nix build .#<package-name>-codeql
 
 ### CodeQL Overlay
 
-The overlay patches `pkgs.codeql` with `autoPatchelfHook` to fix ELF issues on NixOS. Currently ignores:
-- `libasound.so.2`
-- `liblttng-ust.so.0`
+The overlay patches `pkgs.codeql` to:
+- **On Linux**: Apply `autoPatchelfHook` to fix ELF issues on NixOS. Currently ignores:
+  - `libasound.so.2`
+  - `liblttng-ust.so.0`
+- **On Darwin**: Disable autoPatchelf (Mach-O binaries don't need it) and override `installPhase` to use osx64 tools layout with proper Java symlinks for both x86_64 and aarch64
 
-If new libraries need ignoring, update the overlay in [flake.nix](flake.nix).
+If new libraries need ignoring on Linux, update the overlay in [flake.nix](flake.nix).
 
 ## Using the Wrapper in External Flakes
 
@@ -205,6 +239,14 @@ After building a wrapped package:
 - CodeQL Database: `result-codeql/`
 
 The database is stored as a separate Nix output, accessible via the `codeql` output attribute.
+
+### Platform-Specific Notes
+
+**macOS (Darwin)**:
+- Both Intel (`x86_64-darwin`) and Apple Silicon (`aarch64-darwin`) are supported
+- The osx64 CodeQL bundle is used automatically for both architectures
+- Java paths are configured for both `java` and `java-aarch64` tools
+- Mach-O binaries are not patched (autoPatchelf is disabled)
 
 ## License
 

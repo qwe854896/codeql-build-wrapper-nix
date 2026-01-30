@@ -4,6 +4,18 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
+    # CodeQL bundles (non-flake) so downstream users can override versions
+    # Example override:
+    #   nix flake lock --override-input codeql-bundle-linux64 \
+    #     https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.1/codeql-bundle-linux64.tar.gz
+    codeql-bundle-linux64 = {
+      url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-linux64.tar.gz";
+      flake = false;
+    };
+    codeql-bundle-osx64 = {
+      url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-osx64.tar.gz";
+      flake = false;
+    };
   };
 
   outputs =
@@ -11,15 +23,19 @@
       self,
       nixpkgs,
       flake-utils,
+      codeql-bundle-linux64,
+      codeql-bundle-osx64,
     }:
     let
       # ─────────────────────────────────────────────────────────────────
-      # Configuration: CodeQL version and packages to wrap
+      # Configuration: supported systems and packages to wrap
       # ─────────────────────────────────────────────────────────────────
 
-      # Override this to use a different CodeQL version
-      # Set to null to use the nixpkgs default version
-      codeqlVersion = "2.24.0"; # e.g., "2.24.0" or null
+      supportedSystems = [
+        "x86_64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
 
       # List of package attribute names to wrap with CodeQL
       # These will be available as: nix build .#hello-codeql, .#git-codeql, etc.
@@ -49,6 +65,15 @@
       # CodeQL overlay: patches CodeQL for NixOS compatibility
       # ─────────────────────────────────────────────────────────────────
 
+      codeqlBundleForSystem =
+        system:
+        if system == "x86_64-linux" then
+          codeql-bundle-linux64
+        else if system == "x86_64-darwin" || system == "aarch64-darwin" then
+          codeql-bundle-osx64
+        else
+          throw "Unsupported system for CodeQL bundle: ${system}";
+
       codeqlOverlay = final: prev: {
         codeql = prev.codeql.overrideAttrs (
           old:
@@ -57,26 +82,43 @@
               final.autoPatchelfHook
               final.unzip
             ];
+            dontAutoPatchelf = final.stdenv.hostPlatform.isDarwin;
             autoPatchelfIgnoreMissingDeps = [
               "libasound.so.2"
               "liblttng-ust.so.0"
             ];
+            installPhase =
+              if final.stdenv.hostPlatform.isDarwin then
+                ''
+                  # codeql directory should not be top-level, otherwise,
+                  # it'll include /nix/store to resolve extractors.
+                  mkdir -p $out/{codeql,bin}
+                  cp -R * $out/codeql/
+
+                  # Ensure CODEQL_DIST + CODEQL_PLATFORM resolve a usable Java
+                  if [ -d "$out/codeql/tools/osx64/java" ]; then
+                    rm -rf $out/codeql/tools/osx64/java
+                    ln -s ${final.jdk17} $out/codeql/tools/osx64/java
+                  fi
+
+                  # On Apple Silicon, the bundle also contains java-aarch64
+                  if [ -d "$out/codeql/tools/osx64/java-aarch64" ]; then
+                    rm -rf $out/codeql/tools/osx64/java-aarch64
+                    ln -s ${final.jdk17} $out/codeql/tools/osx64/java-aarch64
+                  fi
+
+                  ln -s $out/codeql/codeql $out/bin/
+                ''
+              else
+                (old.installPhase or "");
           }
-          // (
-            if codeqlVersion != null then
-              {
-                # Override version + src when a specific version is requested
-                # Using codeql-bundle which includes all standard packs (no need for codeql pack install)
-                version = codeqlVersion;
-                src = final.fetchurl {
-                  url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${codeqlVersion}/codeql-bundle-linux64.tar.gz";
-                  # Users must update this hash when changing codeqlVersion
-                  hash = "sha256-FkbYRuD226u9wQK0pisd86/YSH849iX+1Isn7UR9rjc=";
-                };
-              }
-            else
-              { }
-          )
+          // {
+            # Use CodeQL bundle input (non-flake) so downstream users can override
+            # the bundle version via flake input overrides.
+            src = codeqlBundleForSystem final.stdenv.hostPlatform.system;
+            # Specify version for consistency
+            version = "2.24.0";
+          }
         );
       };
 
@@ -94,7 +136,7 @@
         );
 
     in
-    flake-utils.lib.eachDefaultSystem (
+    flake-utils.lib.eachSystem supportedSystems (
       system:
       let
         pkgs = import nixpkgs {
