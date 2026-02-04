@@ -1,31 +1,5 @@
 {
   "nodes": {
-    "codeql-bundle-linux64": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1768839659,
-        "narHash": "sha256-Km4tI/zdFpjMSd6fYers0bYmi5aDpnxQiIFEPbZlCQM=",
-        "type": "tarball",
-        "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-linux64.tar.gz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-linux64.tar.gz"
-      }
-    },
-    "codeql-bundle-osx64": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1768839681,
-        "narHash": "sha256-YipwP476IYGCTgmau+dbeVlkUdgE985Qc9itum9LwEs=",
-        "type": "tarball",
-        "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-osx64.tar.gz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-osx64.tar.gz"
-      }
-    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -62,8 +36,6 @@
     },
     "root": {
       "inputs": {
-        "codeql-bundle-linux64": "codeql-bundle-linux64",
-        "codeql-bundle-osx64": "codeql-bundle-osx64",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }

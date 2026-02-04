@@ -4,18 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
-    # CodeQL bundles (non-flake) so downstream users can override versions
-    # Example override:
-    #   nix flake lock --override-input codeql-bundle-linux64 \
-    #     https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.1/codeql-bundle-linux64.tar.gz
-    codeql-bundle-linux64 = {
-      url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-linux64.tar.gz";
-      flake = false;
-    };
-    codeql-bundle-osx64 = {
-      url = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v2.24.0/codeql-bundle-osx64.tar.gz";
-      flake = false;
-    };
   };
 
   outputs =
@@ -23,17 +11,27 @@
       self,
       nixpkgs,
       flake-utils,
-      codeql-bundle-linux64,
-      codeql-bundle-osx64,
     }:
     let
       # ─────────────────────────────────────────────────────────────────
       # Configuration: supported systems and packages to wrap
       # ─────────────────────────────────────────────────────────────────
 
+      codeqlVersion = "2.24.0";
+      codeqlReleaseUrl = "https://github.com/github/codeql-action/releases/download/codeql-bundle-v${codeqlVersion}";
+      codeqlBundles = {
+        "x86_64-linux" = {
+          filename = "codeql-bundle-linux64.tar.gz";
+          hash = "sha256-FkbYRuD226u9wQK0pisd86/YSH849iX+1Isn7UR9rjc=";
+        };
+        "aarch64-darwin" = {
+          filename = "codeql-bundle-osx64.tar.gz";
+          hash = "sha256-0D7ur1QElPYyb6FTft9U7cBFwBp+6MXN4hxm2vT2vKM=";
+        };
+      };
+
       supportedSystems = [
         "x86_64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
 
@@ -67,16 +65,46 @@
 
       codeqlBundleForSystem =
         system:
-        if system == "x86_64-linux" then
-          codeql-bundle-linux64
-        else if system == "x86_64-darwin" || system == "aarch64-darwin" then
-          codeql-bundle-osx64
+        let
+          bundle = codeqlBundles.${system} or null;
+        in
+        if bundle == null then
+          throw "Unsupported system for CodeQL bundle: '${system}'. Supported systems: ${builtins.concatStringsSep ", " (builtins.attrNames codeqlBundles)}"
         else
-          throw "Unsupported system for CodeQL bundle: ${system}";
+          bundle // { url = "${codeqlReleaseUrl}/${bundle.filename}"; };
 
       codeqlOverlay = final: prev: {
         codeql = prev.codeql.overrideAttrs (
           old:
+          let
+            bundleForSystem = codeqlBundleForSystem final.stdenv.hostPlatform.system;
+            codeqlSrc = final.fetchurl {
+              url = bundleForSystem.url;
+              hash = bundleForSystem.hash;
+            };
+
+            # Install phase for macOS: extract bundle and link Java
+            darwinInstallPhase = ''
+              # codeql directory should not be top-level, otherwise,
+              # it'll include /nix/store to resolve extractors.
+              mkdir -p $out/{codeql,bin}
+              cp -R * $out/codeql/
+
+              # Ensure CODEQL_DIST + CODEQL_PLATFORM resolve a usable Java
+              if [ -d "$out/codeql/tools/osx64/java" ]; then
+                rm -rf $out/codeql/tools/osx64/java
+                ln -s ${final.jdk17} $out/codeql/tools/osx64/java
+              fi
+
+              # On Apple Silicon, the bundle also contains java-aarch64
+              if [ -d "$out/codeql/tools/osx64/java-aarch64" ]; then
+                rm -rf $out/codeql/tools/osx64/java-aarch64
+                ln -s ${final.jdk17} $out/codeql/tools/osx64/java-aarch64
+              fi
+
+              ln -s $out/codeql/codeql $out/bin/
+            '';
+          in
           {
             nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [
               final.autoPatchelfHook
@@ -88,36 +116,12 @@
               "liblttng-ust.so.0"
             ];
             installPhase =
-              if final.stdenv.hostPlatform.isDarwin then
-                ''
-                  # codeql directory should not be top-level, otherwise,
-                  # it'll include /nix/store to resolve extractors.
-                  mkdir -p $out/{codeql,bin}
-                  cp -R * $out/codeql/
-
-                  # Ensure CODEQL_DIST + CODEQL_PLATFORM resolve a usable Java
-                  if [ -d "$out/codeql/tools/osx64/java" ]; then
-                    rm -rf $out/codeql/tools/osx64/java
-                    ln -s ${final.jdk17} $out/codeql/tools/osx64/java
-                  fi
-
-                  # On Apple Silicon, the bundle also contains java-aarch64
-                  if [ -d "$out/codeql/tools/osx64/java-aarch64" ]; then
-                    rm -rf $out/codeql/tools/osx64/java-aarch64
-                    ln -s ${final.jdk17} $out/codeql/tools/osx64/java-aarch64
-                  fi
-
-                  ln -s $out/codeql/codeql $out/bin/
-                ''
-              else
-                (old.installPhase or "");
+              if final.stdenv.hostPlatform.isDarwin then darwinInstallPhase else (old.installPhase or "");
           }
           // {
-            # Use CodeQL bundle input (non-flake) so downstream users can override
-            # the bundle version via flake input overrides.
-            src = codeqlBundleForSystem final.stdenv.hostPlatform.system;
-            # Specify version for consistency
-            version = "2.24.0";
+            # Use fetchurl to download CodeQL bundle on-demand for the current system
+            src = codeqlSrc;
+            version = codeqlVersion;
           }
         );
       };
